@@ -49,10 +49,11 @@ Requirements: numpy
 """
 
 from __future__ import annotations
-import math
+
 from typing import Optional, Literal
 import numpy as np
 from collections import Counter
+import time
 
 BackendName = Literal["numpy", "torch"]
 
@@ -160,6 +161,11 @@ class VoidResonanceV3:
         self.nucleation_rate = kwargs.get('nucleation_rate', 0.1)
 
         # --- State fields ---
+        self._init_state()
+
+    def _init_state(self):
+        """Initialize / reset all state fields to resting configuration."""
+        H, W, K = self.H, self.W, self.K
         self.psi = self.bk.zeros_complex((H, W, K))
         self.V = self.bk.ones_float((H, W, K))
         self.R = self.bk.ones_float((H, W, K))
@@ -169,9 +175,61 @@ class VoidResonanceV3:
         self.echo = self.bk.zeros_float((H, W, K))
         self.stress = self.bk.zeros_float((H, W))
         self.boundary = self.bk.zeros_float((H, W, K))
-
         self.num_actions = min(4, K)
         self.t = 0
+
+    def reset(self):
+        """Reset all state fields to initial resting configuration."""
+        self._init_state()
+
+    def get_diagnostics(self):
+        """Return a dictionary of field statistics for monitoring."""
+        amp = np.abs(self.psi)
+        return {
+            't': self.t,
+            'psi_mean': float(amp.mean()),
+            'psi_max': float(amp.max()),
+            'V_mean': float(self.V.mean()),
+            'V_min': float(self.V.min()),
+            'knots_total': float(self.knots.sum()),
+            'knots_max': float(self.knots.max()),
+            'crystal_total': float(self.crystal.sum()),
+            'crystal_max': float(self.crystal.max()),
+            'crystal_phase_std': float(self.crystal_phase.std()),
+            'boundary_max': float(self.boundary.max()),
+            'boundary_mean': float(self.boundary.mean()),
+            'stress_mean': float(self.stress.mean()),
+            'stress_max': float(self.stress.max()),
+            'echo_energy': float(np.abs(self.echo).sum()),
+            'R_mean': float(self.R.mean()),
+            'R_max': float(self.R.max()),
+            'field_energy': float((amp ** 2).sum()),
+        }
+
+    def get_state(self):
+        """Serialize all state fields to a dictionary of numpy arrays."""
+        return {
+            'H': self.H, 'W': self.W, 'K': self.K, 't': self.t,
+            'psi': self.psi.copy(), 'V': self.V.copy(),
+            'R': self.R.copy(), 'knots': self.knots.copy(),
+            'crystal': self.crystal.copy(),
+            'crystal_phase': self.crystal_phase.copy(),
+            'echo': self.echo.copy(), 'stress': self.stress.copy(),
+            'boundary': self.boundary.copy(),
+        }
+
+    def load_state(self, state):
+        """Restore state fields from a dictionary produced by get_state()."""
+        self.t = state['t']
+        self.psi = state['psi'].copy()
+        self.V = state['V'].copy()
+        self.R = state['R'].copy()
+        self.knots = state['knots'].copy()
+        self.crystal = state['crystal'].copy()
+        self.crystal_phase = state['crystal_phase'].copy()
+        self.echo = state['echo'].copy()
+        self.stress = state['stress'].copy()
+        self.boundary = state['boundary'].copy()
 
     def _crystal_boundary_tension(self):
         bk = self.bk
@@ -216,8 +274,11 @@ class VoidResonanceV3:
 
     def step(self, s_amp, s_ph=None):
         bk = self.bk
+        s_amp = np.asarray(s_amp, dtype=np.float64)
         if s_ph is None:
             s_ph = np.zeros_like(s_amp)
+        else:
+            s_ph = np.asarray(s_ph, dtype=np.float64)
         V_before = self.V.copy()
 
         # 1. WOUND + RESONANCE CASCADE
@@ -328,25 +389,31 @@ def run_tests():
     s_B = np.array([0, 0, 1, 0, 0, 0, 0, 0])
     empty = np.zeros(8)
     results = []
+    t_start = time.time()
 
-    # T1: Resonance Cascade
+    # ---- T1: Resonance Cascade ----
     e1 = VoidResonanceV3(resonance_range=0.5)
     e2 = VoidResonanceV3(resonance_range=0)
     for _ in range(50):
         e1.step(s_A); e2.step(s_A)
-    pass1 = e1.V[5:, :, 0].mean() < e2.V[5:, :, 0].mean()
+    v1_far = e1.V[5:, :, 0].mean()
+    v2_far = e2.V[5:, :, 0].mean()
+    pass1 = v1_far < v2_far
     results.append(pass1)
-    print(f"[PASS={pass1}] T1: Resonance Cascade")
+    print(f"[PASS={pass1}] T1: Resonance Cascade "
+          f"(resonant={v1_far:.4f} < no_res={v2_far:.4f})")
 
-    # T2: Crystallization
+    # ---- T2: Crystallization ----
     e3 = VoidResonanceV3(knot_threshold=0.3, crystal_threshold=0.1)
     for _ in range(80):
         e3.step(s_A)
-    pass2 = e3.crystal[:, :, 0].sum() > 1.0
+    c_sum = e3.crystal[:, :, 0].sum()
+    pass2 = c_sum > 1.0
     results.append(pass2)
-    print(f"[PASS={pass2}] T2: Crystallization")
+    print(f"[PASS={pass2}] T2: Crystallization "
+          f"(crystal_sum={c_sum:.2f} > 1.0)")
 
-    # T3: Scar Erosion
+    # ---- T3: Scar Erosion ----
     e4 = VoidResonanceV3(knot_threshold=0.3, erosion_rate=0.5)
     e5 = VoidResonanceV3(knot_threshold=0.3, erosion_rate=0.0)
     for _ in range(50):
@@ -354,11 +421,14 @@ def run_tests():
     k4 = e4.knots.sum(); k5 = e5.knots.sum()
     for _ in range(100):
         e4.step(empty); e5.step(empty)
-    pass3 = (k4 - e4.knots.sum()) > (k5 - e5.knots.sum())
+    erosion4 = k4 - e4.knots.sum()
+    erosion5 = k5 - e5.knots.sum()
+    pass3 = erosion4 > erosion5
     results.append(pass3)
-    print(f"[PASS={pass3}] T3: Scar Erosion")
+    print(f"[PASS={pass3}] T3: Scar Erosion "
+          f"(eroded={erosion4:.2f} > retained={erosion5:.2f})")
 
-    # T4: Wound Echo
+    # ---- T4: Wound Echo ----
     e_echo = VoidResonanceV3(echo_coupling=0.1)
     e_noecho = VoidResonanceV3(echo_coupling=0)
     for _ in range(30):
@@ -368,11 +438,13 @@ def run_tests():
         e_echo.step(empty); e_noecho.step(empty)
         v_ec.append(e_echo.V[:, :, 0].mean())
         v_ne.append(e_noecho.V[:, :, 0].mean())
-    pass4 = np.var(v_ec) > np.var(v_ne)
+    var_ec = np.var(v_ec); var_ne = np.var(v_ne)
+    pass4 = var_ec > var_ne
     results.append(pass4)
-    print(f"[PASS={pass4}] T4: Wound Echo")
+    print(f"[PASS={pass4}] T4: Wound Echo "
+          f"(echo_var={var_ec:.2e} > no_echo_var={var_ne:.2e})")
 
-    # T5: Holographic Recall
+    # ---- T5: Holographic Recall ----
     e_h = VoidResonanceV3()
     s_AB = np.array([1, 1, 0, 0, 0, 0, 0, 0])
     for _ in range(50):
@@ -381,26 +453,29 @@ def run_tests():
     for _ in range(20):
         e_h.step(s_A, np.array([0.7, 0, 0, 0, 0, 0, 0, 0]))
     a = np.abs(e_h.psi)
-    pass5 = a[:, :, 1].mean() > a[:, :, 2].mean() * 3
+    ch1_mean = a[:, :, 1].mean()
+    ch2_mean = a[:, :, 2].mean()
+    pass5 = ch1_mean > ch2_mean * 3
     results.append(pass5)
-    print(f"[PASS={pass5}] T5: Holographic Recall")
+    print(f"[PASS={pass5}] T5: Holographic Recall "
+          f"(ch1={ch1_mean:.4f} > 3*ch2={ch2_mean * 3:.4f})")
 
-    # T6: Behavioral Differentiation
+    # ---- T6: Behavioral Differentiation ----
     e_b = VoidResonanceV3(knot_threshold=1.2)
     aA = [e_b.step(s_A) for _ in range(80)]
     aB = [e_b.step(s_B) for _ in range(80)]
-    pass6 = (Counter(aA).most_common(1)[0][0]
-             != Counter(aB).most_common(1)[0][0])
+    act_A = Counter(aA).most_common(1)[0][0]
+    act_B = Counter(aB).most_common(1)[0][0]
+    pass6 = act_A != act_B
     results.append(pass6)
     print(f"[PASS={pass6}] T6: Behavioral Differentiation "
-          f"(A={Counter(aA).most_common(1)[0][0]} "
-          f"B={Counter(aB).most_common(1)[0][0]})")
+          f"(A={act_A} B={act_B})")
 
     print("-" * 70)
     print(" v3 Extension Tests: Crystal Phase Dynamics")
     print("-" * 70)
 
-    # T7: Crystal Phase Imprinting
+    # ---- T7: Crystal Phase Imprinting ----
     e_pa = VoidResonanceV3(knot_threshold=0.3, crystal_threshold=0.1)
     e_pb = VoidResonanceV3(knot_threshold=0.3, crystal_threshold=0.1)
     for _ in range(80):
@@ -411,13 +486,16 @@ def run_tests():
     if mask_a.any() and mask_b.any():
         mean_phase_a = np.mean(e_pa.crystal_phase[:, :, 0][mask_a])
         mean_phase_b = np.mean(e_pb.crystal_phase[:, :, 0][mask_b])
-        pass7 = abs(mean_phase_a - mean_phase_b) > 0.1
+        phase_diff = abs(mean_phase_a - mean_phase_b)
+        pass7 = phase_diff > 0.1
     else:
+        phase_diff = 0.0
         pass7 = False
     results.append(pass7)
-    print(f"[PASS={pass7}] T7: Crystal Phase Imprinting")
+    print(f"[PASS={pass7}] T7: Crystal Phase Imprinting "
+          f"(phase_diff={phase_diff:.4f})")
 
-    # T8: Boundary Tension Emergence
+    # ---- T8: Boundary Tension Emergence ----
     e_bt = VoidResonanceV3(
         knot_threshold=0.3, crystal_threshold=0.1,
         fracture_threshold=10.0)
@@ -425,12 +503,13 @@ def run_tests():
         e_bt.step(s_A, np.array([1.0, 0, 0, 0, 0, 0, 0, 0]))
     for _ in range(60):
         e_bt.step(s_A, np.array([-2.0, 0, 0, 0, 0, 0, 0, 0]))
-    pass8 = e_bt.boundary[:, :, 0].max() > 0.01
+    b_max = e_bt.boundary[:, :, 0].max()
+    pass8 = b_max > 0.01
     results.append(pass8)
     print(f"[PASS={pass8}] T8: Boundary Tension "
-          f"(max={e_bt.boundary[:, :, 0].max():.4f})")
+          f"(max={b_max:.4f} > 0.01)")
 
-    # T9: Crystal Fracture
+    # ---- T9: Crystal Fracture ----
     e_frac = VoidResonanceV3(
         knot_threshold=0.3, crystal_threshold=0.1,
         fracture_threshold=0.05)
@@ -450,7 +529,7 @@ def run_tests():
     print(f"[PASS={pass9}] T9: Crystal Fracture "
           f"(frac={c_frac:.2f} vs intact={c_nofrac:.2f})")
 
-    # T10: Crystal Fusion
+    # ---- T10: Crystal Fusion ----
     e_fuse = VoidResonanceV3(
         knot_threshold=0.3, crystal_threshold=0.1,
         fusion_rate=0.15, fracture_threshold=100.0)
@@ -467,7 +546,7 @@ def run_tests():
     print(f"[PASS={pass10}] T10: Crystal Fusion "
           f"(fused={c_fuse:.2f} vs separate={c_nofuse:.2f})")
 
-    # T11: Nucleation at Boundaries
+    # ---- T11: Nucleation at Boundaries ----
     e_nuc = VoidResonanceV3(
         knot_threshold=0.3, crystal_threshold=0.1,
         nucleation_rate=0.3, fracture_threshold=100.0)
@@ -487,7 +566,7 @@ def run_tests():
     print(f"[PASS={pass11}] T11: Boundary Nucleation "
           f"(nucleated={k_nuc:.2f} vs baseline={k_nonuc:.2f})")
 
-    # T12: Fracture Wave Burst (majority-of-steps test)
+    # ---- T12: Fracture Wave Burst ----
     e_burst = VoidResonanceV3(
         knot_threshold=0.3, crystal_threshold=0.1,
         fracture_threshold=0.05)
@@ -510,11 +589,144 @@ def run_tests():
     print(f"[PASS={pass12}] T12: Fracture Wave Burst "
           f"(burst wins {burst_wins}/{total_steps} steps)")
 
+    print("-" * 70)
+    print(" v3 Extended Validation Tests")
+    print("-" * 70)
+
+    # ---- T13: Timestep Counter ----
+    e_t = VoidResonanceV3()
+    for _ in range(25):
+        e_t.step(s_A)
+    pass13 = e_t.t == 25
+    results.append(pass13)
+    print(f"[PASS={pass13}] T13: Timestep Counter (t={e_t.t} == 25)")
+
+    # ---- T14: State Reset ----
+    e_r = VoidResonanceV3()
+    for _ in range(30):
+        e_r.step(s_A)
+    e_r.reset()
+    pass14 = (e_r.t == 0
+              and e_r.V.mean() == 1.0
+              and e_r.knots.sum() == 0.0
+              and np.abs(e_r.psi).sum() == 0.0
+              and e_r.boundary.sum() == 0.0
+              and e_r.crystal_phase.sum() == 0.0)
+    results.append(pass14)
+    print(f"[PASS={pass14}] T14: State Reset "
+          f"(t={e_r.t}, V={e_r.V.mean():.1f})")
+
+    # ---- T15: Save / Load State ----
+    e_sl = VoidResonanceV3(knot_threshold=0.3)
+    for _ in range(40):
+        e_sl.step(s_A)
+    saved = e_sl.get_state()
+    t_saved = e_sl.t
+    knots_saved = e_sl.knots.sum()
+    crystal_saved = e_sl.crystal.sum()
+    for _ in range(20):
+        e_sl.step(s_B)
+    e_sl.load_state(saved)
+    pass15 = (e_sl.t == t_saved
+              and abs(e_sl.knots.sum() - knots_saved) < 1e-6
+              and abs(e_sl.crystal.sum() - crystal_saved) < 1e-6)
+    results.append(pass15)
+    print(f"[PASS={pass15}] T15: Save/Load State "
+          f"(t_restored={e_sl.t} == {t_saved})")
+
+    # ---- T16: Diagnostics Completeness ----
+    e_d = VoidResonanceV3()
+    for _ in range(10):
+        e_d.step(s_A)
+    diag = e_d.get_diagnostics()
+    required_keys = {'t', 'psi_mean', 'psi_max', 'V_mean', 'V_min',
+                     'knots_total', 'knots_max', 'crystal_total',
+                     'crystal_max', 'crystal_phase_std', 'boundary_max',
+                     'boundary_mean', 'stress_mean', 'stress_max',
+                     'echo_energy', 'R_mean', 'R_max', 'field_energy'}
+    pass16 = required_keys.issubset(set(diag.keys()))
+    results.append(pass16)
+    print(f"[PASS={pass16}] T16: Diagnostics "
+          f"({len(diag)} fields, energy={diag['field_energy']:.2f})")
+
+    # ---- T17: Zero-Input Stability ----
+    e_z = VoidResonanceV3()
+    for _ in range(200):
+        e_z.step(empty)
+    v_stable = e_z.V.mean()
+    psi_stable = np.abs(e_z.psi).max()
+    pass17 = v_stable > 0.99 and psi_stable < 1e-6
+    results.append(pass17)
+    print(f"[PASS={pass17}] T17: Zero-Input Stability "
+          f"(V={v_stable:.4f}, psi_max={psi_stable:.2e})")
+
+    # ---- T18: Crystal Phase Persistence After Reset ----
+    e_cp = VoidResonanceV3(knot_threshold=0.3, crystal_threshold=0.1,
+                           fracture_threshold=100.0)
+    for _ in range(80):
+        e_cp.step(s_A, np.array([1.0, 0, 0, 0, 0, 0, 0, 0]))
+    phase_before = e_cp.crystal_phase.copy()
+    crystal_before = e_cp.crystal.copy()
+    for _ in range(20):
+        e_cp.step(empty)
+    mask = crystal_before[:, :, 0] > 0.3
+    if mask.any():
+        phase_drift = np.abs(
+            e_cp.crystal_phase[:, :, 0][mask]
+            - phase_before[:, :, 0][mask]).mean()
+        pass18 = phase_drift < 0.5
+    else:
+        pass18 = False
+    results.append(pass18)
+    print(f"[PASS={pass18}] T18: Crystal Phase Persistence "
+          f"(drift={phase_drift:.4f} < 0.5)")
+
+    # ---- T19: Multi-Channel Independence ----
+    e_m = VoidResonanceV3(knot_threshold=0.3)
+    s_ch0 = np.array([5, 0, 0, 0, 0, 0, 0, 0])
+    for _ in range(60):
+        e_m.step(s_ch0)
+    ch0_crystal = e_m.crystal[:, :, 0].sum()
+    ch3_crystal = e_m.crystal[:, :, 3].sum()
+    pass19 = ch0_crystal > ch3_crystal * 2
+    results.append(pass19)
+    print(f"[PASS={pass19}] T19: Channel Independence "
+          f"(ch0={ch0_crystal:.2f} >> ch3={ch3_crystal:.2f})")
+
+    # ---- T20: Fracture-Fusion Antagonism ----
+    # Under phase conflict, fracture should reduce crystal relative to
+    # an engine where fracture is disabled (fusion-only).
+    e_both = VoidResonanceV3(
+        knot_threshold=0.3, crystal_threshold=0.1,
+        fracture_threshold=0.05, fusion_rate=0.15)
+    e_fuse_only = VoidResonanceV3(
+        knot_threshold=0.3, crystal_threshold=0.1,
+        fracture_threshold=100.0, fusion_rate=0.15)
+    for _ in range(60):
+        e_both.step(s_A, np.array([1.0, 0, 0, 0, 0, 0, 0, 0]))
+        e_fuse_only.step(s_A, np.array([1.0, 0, 0, 0, 0, 0, 0, 0]))
+    for _ in range(60):
+        e_both.step(s_A, np.array([-2.0, 0, 0, 0, 0, 0, 0, 0]))
+        e_fuse_only.step(s_A, np.array([-2.0, 0, 0, 0, 0, 0, 0, 0]))
+    c_both = e_both.crystal[:, :, 0].sum()
+    c_fuse_only = e_fuse_only.crystal[:, :, 0].sum()
+    pass20 = c_both < c_fuse_only
+    results.append(pass20)
+    print(f"[PASS={pass20}] T20: Fracture-Fusion Antagonism "
+          f"(frac+fuse={c_both:.2f} < fuse_only={c_fuse_only:.2f})")
+
+    # ---- Summary ----
+    elapsed = time.time() - t_start
     print("=" * 70)
     total = sum(results)
-    print(f"FINAL RESULT: {total}/{len(results)} PASS")
-    print(f"  v2 core:  {sum(results[:6])}/6")
-    print(f"  v3 phase: {sum(results[6:])}/6")
+    n_core = sum(results[:6])
+    n_phase = sum(results[6:12])
+    n_ext = sum(results[12:])
+    print(f"FINAL RESULT: {total}/{len(results)} PASS  "
+          f"({elapsed:.2f}s)")
+    print(f"  v2 core:     {n_core}/6")
+    print(f"  v3 phase:    {n_phase}/6")
+    print(f"  v3 extended: {n_ext}/{len(results) - 12}")
     print("=" * 70)
 
 
