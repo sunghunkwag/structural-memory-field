@@ -33,8 +33,12 @@ class TextEncoder:
         amp = np.zeros(K, dtype=np.float64)
         phase = np.zeros(K, dtype=np.float64)
 
-        if not text:
+        if not text or text.isspace():
             return amp, phase
+
+        # Truncate very long strings to keep computation bounded
+        if len(text) > 10000:
+            text = text[:10000]
 
         # Amplitude: distribute character energy across channels via n-grams.
         # Each character contributes to its primary channel (ord % K) and

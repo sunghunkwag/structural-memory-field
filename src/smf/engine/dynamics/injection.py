@@ -15,7 +15,7 @@ def apply_injection(
     ip: InjectionParams,
 ) -> np.ndarray:
     """Inject stimulus wave into psi field. Returns updated psi."""
-    layers = ip.layers
+    layers = min(ip.layers, psi.shape[0])  # clamp to field height
     for r in range(layers):
         rec = bk.maximum(
             V[r, :, :],
