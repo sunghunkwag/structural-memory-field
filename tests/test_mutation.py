@@ -95,6 +95,7 @@ _SPECIAL_MUTATIONS = {
     ("erosion", "rate"): 5.0,              # Extreme rate to show clear effect
     ("diffusion", "conductivity_epsilon"): 1.0,   # Large epsilon disrupts conductivity
     # Readout: these only affect action selection, not fields — use extreme values
+    ("readout", "num_actions"): 1,         # Only 1 action available → always 0
     ("readout", "stress_offset"): 1000.0,  # Overwhelms score computation
     ("readout", "knot_amplification"): 100.0,     # Overwhelms via knots
     ("readout", "crystal_amplification"): 100.0,  # Overwhelms via crystal

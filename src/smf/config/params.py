@@ -103,6 +103,7 @@ class CurvatureParams:
 @dataclass
 class ReadoutParams:
     """Action readout parameters."""
+    num_actions: int = 4
     knot_amplification: float = 3.0
     stress_offset: float = 0.01
     crystal_amplification: float = 5.0
@@ -118,6 +119,7 @@ class BackendParams:
 @dataclass
 class PhaseParams:
     """V3 crystal phase dynamics parameters."""
+    neighbor_count: float = 4.0
     fracture_threshold: float = 0.6
     fracture_energy_release: float = 0.3
     fracture_decay: float = 0.5

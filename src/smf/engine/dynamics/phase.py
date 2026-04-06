@@ -9,6 +9,7 @@ def compute_boundary_tension(
     crystal: np.ndarray,
     crystal_phase: np.ndarray,
     bk: NumpyBackend,
+    pp: PhaseParams,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute boundary tension and neighbour crystal mean."""
     cp = crystal_phase
@@ -17,13 +18,13 @@ def compute_boundary_tension(
     dp_dn = bk.abs(bk.sin(cp - bk.roll(cp, 1, 0)))
     dp_lt = bk.abs(bk.sin(cp - bk.roll(cp, -1, 1)))
     dp_rt = bk.abs(bk.sin(cp - bk.roll(cp, 1, 1)))
-    phase_gradient = (dp_up + dp_dn + dp_lt + dp_rt) / 4.0
+    phase_gradient = (dp_up + dp_dn + dp_lt + dp_rt) / pp.neighbor_count
 
     cr_up = bk.roll(cr, -1, 0)
     cr_dn = bk.roll(cr, 1, 0)
     cr_lt = bk.roll(cr, -1, 1)
     cr_rt = bk.roll(cr, 1, 1)
-    neighbor_crystal = (cr_up + cr_dn + cr_lt + cr_rt) / 4.0
+    neighbor_crystal = (cr_up + cr_dn + cr_lt + cr_rt) / pp.neighbor_count
 
     boundary = phase_gradient * cr * neighbor_crystal
     return boundary, neighbor_crystal
@@ -46,7 +47,7 @@ def apply_phase_dynamics(
     shatter = fracture * crystal * pp.fracture_shatter_multiplier
     knots = knots + shatter
     crystal = bk.maximum(crystal - fracture * pp.fracture_decay, 0)
-    burst = (fracture * np.exp(1j * crystal_phase)).astype(np.complex64)
+    burst = fracture * bk.exp_complex(crystal_phase)
     psi = psi + burst * pp.fracture_energy_release
 
     # Fusion

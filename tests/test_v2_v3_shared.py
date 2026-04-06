@@ -1,7 +1,7 @@
 """No-duplication proof: V3 with phase features disabled == V2.
 
 Run V2 and V3 (with v3 phase features disabled) for 100 steps.
-Assert np.array_equal on all shared fields.
+Assert np.array_equal on all shared fields including psi and crystal.
 """
 import numpy as np
 from smf.engine.v2 import EngineV2
@@ -10,11 +10,9 @@ from smf.config.params import EngineConfig
 
 
 def test_v3_matches_v2_with_phase_disabled():
-    """V3 with extreme fracture_threshold (disabling phase dynamics) must
-    match V2 on all shared fields."""
-    # Disable phase dynamics by making fracture/fusion/nucleation inactive
+    """V3 with phase dynamics disabled must match V2 on ALL fields."""
     cfg_v2 = EngineConfig()
-    cfg_v2.stress.knot_threshold = 0.3  # activate knots
+    cfg_v2.stress.knot_threshold = 0.3
 
     cfg_v3 = EngineConfig()
     cfg_v3.stress.knot_threshold = 0.3
@@ -34,8 +32,7 @@ def test_v3_matches_v2_with_phase_disabled():
         a2 = e2.step(s)
         a3 = e3.step(s)
 
-        # Check shared fields are identical
-        for f in ("V", "R", "knots", "echo", "stress"):
+        for f in ("V", "psi", "R", "knots", "crystal", "echo", "stress"):
             arr_v2 = getattr(e2, f)
             arr_v3 = getattr(e3, f)
             assert np.array_equal(arr_v2, arr_v3), (
@@ -43,8 +40,4 @@ def test_v3_matches_v2_with_phase_disabled():
                 f"max_diff={np.max(np.abs(arr_v2 - arr_v3))}"
             )
 
-        # psi diverges because v3 crystallization includes phase imprinting
-        # (forming mask computation) even when phase dynamics are disabled.
-        # crystal also diverges because v3 uses apply_crystallization_v3 not v2's.
-        # This is expected — the key proof is that V, R, knots, echo, stress
-        # remain identical since they don't depend on crystal_phase or boundary.
+        assert a2 == a3, f"Action mismatch at step {i}: v2={a2}, v3={a3}"

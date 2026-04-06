@@ -49,7 +49,7 @@ class EngineV3(EngineV2):
 
         # Boundary tension
         self.f.boundary, neighbor_crystal = compute_boundary_tension(
-            self.f.crystal, self.f.crystal_phase, bk,
+            self.f.crystal, self.f.crystal_phase, bk, cfg.phase,
         )
 
         # Phase dynamics: fracture, fusion, nucleation

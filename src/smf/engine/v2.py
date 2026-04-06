@@ -37,7 +37,7 @@ class EngineV2:
         self.W = self.cfg.W
         self.K = self.cfg.K
         self.bk = NumpyBackend()
-        self.num_actions = min(4, self.K)
+        self.num_actions = min(self.cfg.readout.num_actions, self.K)
         self._init_fields()
 
     def _init_fields(self):
@@ -133,7 +133,6 @@ class EngineV2:
         V_before = self.f.V.copy()
 
         # 1. Wound + resonance cascade
-        w = bk.array_float(s) * cfg.wound.depth
         self.f.V = apply_wound(self.f.V, s, bk, cfg.wound)
         self.f.V = bk.clamp(self.f.V, 0, 1)
 

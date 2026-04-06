@@ -134,7 +134,8 @@ def test_phase_standalone(bk, fields):
     crystal_phase = fields["crystal_phase"].copy()
     crystal_phase[0:4, :, :] = 0.0
     crystal_phase[4:8, :, :] = np.pi
-    boundary, neighbor = compute_boundary_tension(crystal, crystal_phase, bk)
+    from smf.config.params import PhaseParams
+    boundary, neighbor = compute_boundary_tension(crystal, crystal_phase, bk, PhaseParams())
     assert boundary.max() > 0  # tension at phase boundary
 
 
