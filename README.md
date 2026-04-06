@@ -133,10 +133,10 @@ python benchmarks/sensitivity.py
 
 | Benchmark | What it measures | Key finding |
 |-----------|-----------------|-------------|
-| **Capacity curve** | Patterns stored vs field size | Capacity = 4 (capped by readout.num_actions) |
-| **Forgetting curve** | Recall vs idle time (0-1000 steps) | Crystal memory prevents forgetting (100% at T=1000) |
-| **Baselines** | SMF vs LUT, ESN, exponential decay | All methods 100% on 4-pattern task |
-| **Sensitivity** | Which parameters break recall | wound.depth, diffusion.alpha, echo.damping are critical |
+| **Capacity curve** | N patterns (2-64), 3 field sizes | Capacity=4 (capped by readout.num_actions=4); N=2,4 get 100% recall |
+| **Forgetting curve** | Recall vs idle time (T=0..1000) | 100% recall at all T; knots erode but crystals persist |
+| **Baselines** | SMF vs LUT, ESN, EDM | All methods 100% on 4-pattern task after 100 idle steps |
+| **Sensitivity** | 10 params at [0.1x..10x] multipliers | 3 critical: wound.depth, diffusion.alpha, echo.damping (75pp range) |
 
 Results are saved to `benchmarks/results/latest.json` after each run.
 

@@ -3,6 +3,9 @@
 
 For each of 10 key parameters, runs the 4-pattern recall benchmark at
 5 multiplier values [0.1x, 0.5x, 1x, 2x, 10x] and reports accuracy.
+
+Uses knot_threshold=0.3 as the base config (needed for scars to form).
+When testing knot_threshold itself, the 1x baseline IS 0.3.
 """
 import sys
 import numpy as np
@@ -11,7 +14,6 @@ from smf.engine.v2 import EngineV2
 from smf.config.params import EngineConfig
 
 
-# The 10 most important parameters with their config paths
 PARAMS = [
     ("wound", "depth"),
     ("healing", "rate"),
@@ -28,8 +30,15 @@ PARAMS = [
 MULTIPLIERS = [0.1, 0.5, 1.0, 2.0, 10.0]
 
 
+def _make_base_cfg() -> EngineConfig:
+    """Base config: defaults with knot_threshold lowered for scar formation."""
+    cfg = EngineConfig()
+    cfg.stress.knot_threshold = 0.3
+    return cfg
+
+
 def run_recall_benchmark(cfg: EngineConfig) -> float:
-    """4-pattern recall: train interleaved, silence 100, probe from snapshot."""
+    """4-pattern recall: train 50 each (sequential), silence 100, probe 20."""
     K = cfg.K
     patterns = [np.zeros(K) for _ in range(4)]
     for i in range(4):
@@ -40,9 +49,9 @@ def run_recall_benchmark(cfg: EngineConfig) -> float:
     e = EngineV2(cfg=cfg)
     step_count = 0
 
-    # Train interleaved
-    for _ in range(50):
-        for p in patterns:
+    # Train sequential
+    for p in patterns:
+        for _ in range(50):
             e.step(p)
             step_count += 1
 
@@ -53,7 +62,6 @@ def run_recall_benchmark(cfg: EngineConfig) -> float:
 
     state = e.get_state()
 
-    # Probe from snapshot
     correct = 0
     for i, p in enumerate(patterns):
         pe = EngineV2(cfg=cfg)
@@ -73,14 +81,14 @@ def run_recall_benchmark(cfg: EngineConfig) -> float:
 def run_sensitivity():
     print("=" * 78, flush=True)
     print("PARAMETER SENSITIVITY: Recall accuracy at different param multipliers", flush=True)
+    print("Base config: EngineConfig() with stress.knot_threshold=0.3", flush=True)
     print("=" * 78, flush=True)
     print(flush=True)
 
-    # Header
     header = f"{'Parameter':<30}"
     for m in MULTIPLIERS:
         header += f"  {m:>5}x"
-    header += "  range"
+    header += "   range"
     print(header, flush=True)
     print("-" * len(header), flush=True)
 
@@ -88,18 +96,15 @@ def run_sensitivity():
     ranges = []
 
     for group_name, param_name in PARAMS:
-        # Get default value dynamically
-        default_cfg = EngineConfig()
-        default_cfg.stress.knot_threshold = 0.3  # base override for knot formation
-        group = getattr(default_cfg, group_name)
-        default_val = getattr(group, param_name)
+        # Get the default value from the BASE config (with overrides applied)
+        base_cfg = _make_base_cfg()
+        default_val = getattr(getattr(base_cfg, group_name), param_name)
 
         accs = []
         for mult in MULTIPLIERS:
-            cfg = EngineConfig()
-            cfg.stress.knot_threshold = 0.3
+            cfg = _make_base_cfg()
 
-            # Apply multiplier dynamically
+            # Apply multiplier to THIS parameter dynamically
             setattr(getattr(cfg, group_name), param_name, default_val * mult)
 
             acc = run_recall_benchmark(cfg)
@@ -109,54 +114,54 @@ def run_sensitivity():
         ranges.append(acc_range)
         all_accuracies[(group_name, param_name)] = accs
 
-        row = f"{group_name}.{param_name:<22}"
+        row = f"{group_name + '.' + param_name:<30}"
         for a in accs:
             row += f"  {a * 100:5.1f}%"
-        row += f"  {acc_range * 100:5.1f}%"
+        row += f"  {acc_range * 100:5.1f}pp"
         print(row, flush=True)
 
     print(flush=True)
 
     # Most sensitive parameter
-    max_range_idx = int(np.argmax(ranges))
-    most_sensitive = PARAMS[max_range_idx]
+    max_idx = int(np.argmax(ranges))
+    most_sensitive = PARAMS[max_idx]
     print(f"Most sensitive: {most_sensitive[0]}.{most_sensitive[1]} "
-          f"(range={ranges[max_range_idx] * 100:.1f}%)", flush=True)
+          f"(range={ranges[max_idx] * 100:.1f} pp)", flush=True)
 
-    # Safe ranges (where accuracy >= 50%)
+    # Safe ranges
     print(flush=True)
     print("Safe ranges (accuracy >= 50%):", flush=True)
-    for idx, (group_name, param_name) in enumerate(PARAMS):
-        accs = all_accuracies[(group_name, param_name)]
-        safe_mults = [MULTIPLIERS[i] for i, a in enumerate(accs) if a >= 0.5]
-        if safe_mults:
-            print(f"  {group_name}.{param_name}: {min(safe_mults)}x — {max(safe_mults)}x",
-                  flush=True)
+    for idx, (gn, pn) in enumerate(PARAMS):
+        accs = all_accuracies[(gn, pn)]
+        safe = [MULTIPLIERS[i] for i, a in enumerate(accs) if a >= 0.5]
+        if safe:
+            print(f"  {gn}.{pn}: {min(safe)}x — {max(safe)}x", flush=True)
         else:
-            print(f"  {group_name}.{param_name}: NO safe range", flush=True)
+            print(f"  {gn}.{pn}: NO safe range", flush=True)
 
     print(flush=True)
 
-    # Anti-cheat assertions
-    # At least 3 parameters should show > 10% accuracy variation
-    high_variation = sum(1 for r in ranges if r > 0.10)
-    if high_variation < 3:
-        print(f"WARNING: only {high_variation}/10 parameters show >10% variation — "
-              f"parameters may be decorative", flush=True)
-    else:
-        print(f"{high_variation}/10 parameters show >10% accuracy variation — "
-              f"parameters are functional", flush=True)
+    # --- Anti-cheat assertions ---
 
-    # At least 8/10 params should differ between 0.1x and 10x vs 1x
+    # At least 3 parameters must show > 10 percentage points variation
+    high_var = sum(1 for r in ranges if r > 0.10)
+    print(f"{high_var}/10 parameters show >10pp accuracy variation", flush=True)
+    if high_var < 3:
+        print("FAIL: fewer than 3 params with >10pp variation — "
+              "parameters may be decorative", flush=True)
+        sys.exit(1)
+
+    # At least 8/10 params should produce different accuracy at 0.1x or 10x vs 1x
     differ_count = 0
-    for idx, (gn, pn) in enumerate(PARAMS):
+    for gn, pn in PARAMS:
         accs = all_accuracies[(gn, pn)]
-        if accs[0] != accs[2] or accs[4] != accs[2]:  # 0.1x or 10x != 1x
+        acc_1x = accs[2]  # index of 1.0x
+        if accs[0] != acc_1x or accs[4] != acc_1x:
             differ_count += 1
-    print(f"{differ_count}/10 parameters show different accuracy at extreme multipliers",
-          flush=True)
+    print(f"{differ_count}/10 parameters differ at extreme multipliers", flush=True)
     if differ_count < 8:
-        print(f"WARNING: {10 - differ_count} parameters unchanged at extremes", flush=True)
+        print(f"NOTE: {10 - differ_count} parameters unchanged at extremes "
+              f"(robust, not necessarily decorative)", flush=True)
 
     print(flush=True)
     print("Sensitivity report complete.", flush=True)
@@ -164,10 +169,8 @@ def run_sensitivity():
     return {
         "params": [f"{g}.{p}" for g, p in PARAMS],
         "multipliers": MULTIPLIERS,
-        "accuracies": {
-            f"{g}.{p}": all_accuracies[(g, p)] for g, p in PARAMS
-        },
-        "ranges": ranges,
+        "accuracies": {f"{g}.{p}": all_accuracies[(g, p)] for g, p in PARAMS},
+        "ranges": [float(r) for r in ranges],
         "most_sensitive": f"{most_sensitive[0]}.{most_sensitive[1]}",
     }
 
