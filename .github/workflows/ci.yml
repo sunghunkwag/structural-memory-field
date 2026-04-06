@@ -21,3 +21,22 @@ jobs:
           python examples/pattern_memory_demo.py
           python examples/text_encoding_demo.py
           python examples/comparison_baseline.py
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -e ".[test]" scipy
+      - name: Run benchmarks
+        run: python benchmarks/run_all.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmarks/results/latest.json
