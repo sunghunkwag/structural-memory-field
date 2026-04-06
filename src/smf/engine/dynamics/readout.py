@@ -13,22 +13,34 @@ def compute_action_scores(
     num_actions: int,
     rp: ReadoutParams,
 ) -> list[float]:
-    """Compute per-action scores. Returns list of floats.
+    """Compute per-action scores via vectorized broadcast.
 
-    If all scores are zero or contain NaN, returns uniform scores
-    so argmax picks action 0 deterministically.
+    Formula per channel c:
+      score_c = sum((1-V[:,:,c]) * amp[:,:,c] * (1+knots[:,:,c]*knot_amp)
+                     * (stress+offset) * (1+crystal[:,:,c]*crystal_amp))
+
+    Vectorized over all channels simultaneously. NaN/Inf replaced with 0.
     """
-    scores = []
-    for c in range(num_actions):
-        val = float(
-            ((1 - V[:, :, c])
-             * amp[:, :, c]
-             * (1 + knots[:, :, c] * rp.knot_amplification)
-             * (stress + rp.stress_offset)
-             * (1 + crystal[:, :, c] * rp.crystal_amplification)).sum()
-        )
-        # Replace NaN/Inf with 0
-        if np.isnan(val) or np.isinf(val):
-            val = 0.0
-        scores.append(val)
-    return scores
+    n = num_actions
+    # Slice [:,:,:n] for all active channels at once
+    V_n = V[:, :, :n]
+    amp_n = amp[:, :, :n]
+    knots_n = knots[:, :, :n]
+    crystal_n = crystal[:, :, :n]
+
+    # stress is (H, W) — expand to (H, W, 1) for broadcast
+    stress_3d = stress[:, :, np.newaxis]
+
+    # Vectorized: (H, W, n) element-wise product, then sum over (H, W) → (n,)
+    raw = (
+        (1 - V_n)
+        * amp_n
+        * (1 + knots_n * rp.knot_amplification)
+        * (stress_3d + rp.stress_offset)
+        * (1 + crystal_n * rp.crystal_amplification)
+    ).sum(axis=(0, 1))  # sum over spatial dims → shape (n,)
+
+    # Replace NaN/Inf with 0
+    raw = np.where(np.isfinite(raw), raw, 0.0)
+
+    return [float(raw[c]) for c in range(n)]
