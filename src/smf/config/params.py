@@ -260,10 +260,13 @@ class EngineConfig:
     backend: BackendParams = field(default_factory=BackendParams)
     phase: PhaseParams = field(default_factory=PhaseParams)
 
+    debug_validate_interval: int = 0  # validate fields every N steps (0=disabled)
+
     def __post_init__(self) -> None:
         _check_positive("H", self.H)
         _check_positive("W", self.W)
         _check_positive("K", self.K)
+        _check_non_negative("debug_validate_interval", self.debug_validate_interval)
 
     def to_dict(self) -> dict:
         """Serialize to nested dict for state saving."""

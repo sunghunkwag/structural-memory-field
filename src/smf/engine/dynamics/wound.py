@@ -13,7 +13,7 @@ def apply_wound(
 ) -> np.ndarray:
     """Inject wound into V field. Returns updated V (not clamped)."""
     w = bk.array_float(stimulus) * wp.depth
-    layers = wp.layers
+    layers = min(wp.layers, V.shape[0])  # clamp to field height
     for r in range(layers):
         V[r, :, :] -= w * (1 - r / layers)
     return V

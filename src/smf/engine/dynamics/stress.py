@@ -19,6 +19,8 @@ def apply_stress_and_knots(
     gv = bk.gradient_magnitude(V, bp.gradient_epsilon)
     ga = bk.gradient_magnitude(amp, bp.gradient_epsilon)
     raw_stress = (gv + ga * sp.gradient_amp_weight).sum(-1)
+    # Replace NaN/Inf in raw_stress to prevent propagation
+    raw_stress = np.where(np.isfinite(raw_stress), raw_stress, 0.0)
     stress_lap = bk.laplacian_2d(
         bk.expand_dim(raw_stress, -1), bp.laplacian_center_weight
     ).reshape(H, W)

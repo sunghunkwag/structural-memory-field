@@ -183,6 +183,12 @@ class EngineV2:
             self.num_actions, cfg.readout,
         )
         self.f.t += 1
+
+        # Optional periodic validation for debugging
+        interval = cfg.debug_validate_interval
+        if interval > 0 and self.f.t % interval == 0:
+            self.f.validate()
+
         return int(np.argmax(scores))
 
     def _crystallize_and_erode(self, idle: float, cfg: EngineConfig):
