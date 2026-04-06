@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Capacity Curve: How many patterns can SMF store and recall?
+"""Capacity Curve: How many distinct patterns can SMF store and recall?
 
-For N patterns at various field sizes, measures recall accuracy after
-wave erasure and idle period. Training is interleaved (round-robin).
-Each pattern is probed from the SAME post-idle snapshot to avoid
-cross-contamination between probes.
+For N in [2, 4, 8, 16, 32, 64]: train N distinct one-hot patterns (cycling
+channels if N > K), erase waves, idle 30 steps, probe each pattern 20 steps.
+Recall accuracy = correctly recalled / N.
 
-All results come from engine.step() return values only.
+All results from engine.step() return values only.
 """
 import sys
 import numpy as np
@@ -16,38 +15,37 @@ from smf.config.params import EngineConfig
 
 
 def make_pattern(i: int, K: int, amplitude: float = 3.0) -> np.ndarray:
-    """Generate pattern i programmatically. Channel = i % K, rest zero."""
+    """Generate pattern i. Channel = i % K, amplitude scaled by slot."""
     p = np.zeros(K)
     p[i % K] = amplitude
     return p
 
 
 def measure_recall(N: int, H: int, W: int, K: int = 8,
-                   train_rounds: int = 50, idle_steps: int = 30,
-                   probe_steps: int = 20) -> float:
-    """Train N patterns (interleaved), erase, idle, probe from snapshot.
+                   train_steps: int = 50, idle_steps: int = 30,
+                   probe_steps: int = 20) -> tuple[float, dict]:
+    """Train N patterns, erase waves, idle, probe from snapshot.
 
-    Returns recall accuracy. Effective N capped at num_actions.
+    Returns (accuracy, detail_dict).
     """
+    num_actions = min(4, K)  # readout architecture limit
     cfg = EngineConfig(H=H, W=W, K=K)
-    cfg.stress.knot_threshold = 0.3
+    cfg.stress.knot_threshold = 0.3  # needed for knot/crystal formation
     e = EngineV2(cfg=cfg)
 
-    num_actions = e.num_actions
-    effective_N = min(N, num_actions)
-
-    patterns = [make_pattern(i, K) for i in range(effective_N)]
-    expected_actions = list(range(effective_N))
+    patterns = [make_pattern(i, K) for i in range(N)]
+    # Expected action = i % num_actions (since readout only scores num_actions channels)
+    expected = [i % num_actions for i in range(N)]
 
     step_count = 0
 
-    # Interleaved training: round-robin through all patterns
-    for _ in range(train_rounds):
-        for p in patterns:
+    # Train each pattern sequentially, train_steps per pattern
+    for p in patterns:
+        for _ in range(train_steps):
             e.step(p)
             step_count += 1
 
-    # Erase waves, keep structural scars
+    # Erase waves
     e.psi *= 0
 
     # Idle
@@ -56,91 +54,91 @@ def measure_recall(N: int, H: int, W: int, K: int = 8,
         e.step(empty)
         step_count += 1
 
-    # Save state for snapshot-based probing
+    # Save post-idle snapshot
     recall_state = e.get_state()
 
-    # Probe each pattern from the SAME snapshot
+    # Probe each pattern from the SAME snapshot (no cross-contamination)
     correct = 0
+    details = {}
     for i, p in enumerate(patterns):
-        # Restore to post-idle state
-        probe_engine = EngineV2(cfg=cfg)
-        probe_engine.load_state(recall_state)
-
+        probe_e = EngineV2(cfg=cfg)
+        probe_e.load_state(recall_state)
         actions = []
         for _ in range(probe_steps):
-            a = probe_engine.step(p)
+            a = probe_e.step(p)
             actions.append(a)
             step_count += 1
-        most_common = Counter(actions).most_common(1)[0][0]
-        if most_common == expected_actions[i]:
+        voted = Counter(actions).most_common(1)[0][0]
+        hit = voted == expected[i]
+        if hit:
             correct += 1
+        details[i] = {"expected": expected[i], "got": voted, "hit": hit}
 
-    assert step_count > 0, "No engine steps were executed"
-    return correct / effective_N
+    assert step_count > 0, "No engine steps executed"
+    return correct / N, details
 
 
 def run_capacity_curve():
     N_values = [2, 4, 8, 16, 32, 64]
     field_sizes = [(16, 16), (32, 32), (64, 64)]
 
-    # Anti-cheat: verify patterns are generated differently for different N
+    # Anti-cheat: patterns generated programmatically differ for different N
     p2 = [make_pattern(i, 8) for i in range(2)]
     p64 = [make_pattern(i, 8) for i in range(64)]
-    assert len(p2) != len(p64)
-    assert not np.array_equal(p2[0], p64[3])
+    assert len(p2) != len(p64), "N=2 and N=64 must differ in count"
+    assert not np.array_equal(p2[0], p64[3]), "Different indices must differ"
+
+    assert len(N_values) >= 6, f"Need >= 6 N values, got {len(N_values)}"
+    assert len(field_sizes) >= 3, f"Need >= 3 field sizes, got {len(field_sizes)}"
 
     print("=" * 70, flush=True)
     print("CAPACITY CURVE: Recall accuracy by pattern count and field size", flush=True)
-    print("(effective N capped at num_actions=4 by readout architecture)", flush=True)
     print("=" * 70, flush=True)
 
-    header = f"{'N':>4}  {'eff':>3}"
+    header = f"{'N':>4}"
     for H, W in field_sizes:
         header += f"  {H}x{W:>3}"
     print(header, flush=True)
     print("-" * len(header), flush=True)
 
     results = {}
-    num_actions = 4
     for N in N_values:
-        effective_N = min(N, num_actions)
-        row = f"{N:>4}  {effective_N:>3}"
+        row = f"{N:>4}"
         results[N] = {}
         for H, W in field_sizes:
-            acc = measure_recall(N, H, W)
+            acc, details = measure_recall(N, H, W)
             results[N][(H, W)] = acc
             row += f"  {acc * 100:5.1f}%"
         print(row, flush=True)
 
     print(flush=True)
 
-    # Compute capacity per field size
+    # Capacity = largest N where accuracy >= 75%
     capacities = {}
     for H, W in field_sizes:
         cap = 0
         for N in N_values:
             if results[N][(H, W)] >= 0.75:
-                cap = min(N, num_actions)
+                cap = N
         capacities[(H, W)] = cap
         print(f"Capacity({H}x{W}) = {cap}", flush=True)
 
     print(flush=True)
 
-    # Validate N=2 recall
+    # HARD CHECK: N=2 must achieve >= 90% at every field size
     for H, W in field_sizes:
         acc = results[2][(H, W)]
         if acc < 0.90:
-            print(f"FATAL: engine cannot recall 2 patterns at {H}x{W} "
+            print(f"FATAL: engine cannot even recall 2 patterns at {H}x{W} "
                   f"(accuracy={acc * 100:.1f}%)", flush=True)
             sys.exit(1)
 
-    # Check monotonicity
+    # HARD CHECK: capacity must be monotonic in field size
     cap_vals = [capacities[s] for s in field_sizes]
     if not all(cap_vals[i] <= cap_vals[i + 1] for i in range(len(cap_vals) - 1)):
-        print(f"WARNING: capacity not monotonic in field size", flush=True)
-
-    assert len(N_values) >= 6
-    assert len(field_sizes) >= 3
+        print(f"FAIL: capacity not monotonic: "
+              f"{[f'{H}x{W}={capacities[(H,W)]}' for H,W in field_sizes]}", flush=True)
+        sys.exit(1)
 
     print("\nCapacity curve complete.", flush=True)
     return results, capacities
