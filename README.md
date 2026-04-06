@@ -116,6 +116,30 @@ pytest tests/ -v
 #   test_dynamics_independence.py — structural: no engine imports in dynamics
 ```
 
+## Benchmarks
+
+Empirical evidence that the physics produces measurable, reproducible behavior.
+
+```bash
+# Run all benchmarks
+python benchmarks/run_all.py
+
+# Run individually
+python benchmarks/capacity_curve.py
+python benchmarks/forgetting_curve.py
+python benchmarks/baselines.py
+python benchmarks/sensitivity.py
+```
+
+| Benchmark | What it measures | Key finding |
+|-----------|-----------------|-------------|
+| **Capacity curve** | Patterns stored vs field size | Capacity = 4 (capped by readout.num_actions) |
+| **Forgetting curve** | Recall vs idle time (0-1000 steps) | Crystal memory prevents forgetting (100% at T=1000) |
+| **Baselines** | SMF vs LUT, ESN, exponential decay | All methods 100% on 4-pattern task |
+| **Sensitivity** | Which parameters break recall | wound.depth, diffusion.alpha, echo.damping are critical |
+
+Results are saved to `benchmarks/results/latest.json` after each run.
+
 ## Project Structure
 
 ```
