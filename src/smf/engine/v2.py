@@ -4,7 +4,9 @@ Orchestrates dynamics modules with zero magic numbers in step().
 All numeric constants come from EngineConfig.
 """
 from __future__ import annotations
+import logging
 import warnings
+from typing import Callable
 import numpy as np
 
 from smf.core.backend import NumpyBackend
@@ -22,11 +24,18 @@ from smf.engine.dynamics.erosion import apply_erosion
 from smf.engine.dynamics.curvature import apply_curvature
 from smf.engine.dynamics.readout import compute_action_scores
 
+_log = logging.getLogger("smf.engine")
+
 
 class EngineV2:
     """V2 physics engine. All parameters via EngineConfig."""
 
-    def __init__(self, cfg: EngineConfig | None = None, **kwargs):
+    def __init__(
+        self,
+        cfg: EngineConfig | None = None,
+        diagnostics_callback: Callable[[dict], None] | None = None,
+        **kwargs,
+    ):
         if cfg is not None:
             self.cfg = cfg
         elif kwargs:
@@ -38,6 +47,7 @@ class EngineV2:
         self.K = self.cfg.K
         self.bk = NumpyBackend()
         self.num_actions = min(self.cfg.readout.num_actions, self.K)
+        self._diagnostics_callback = diagnostics_callback
         self._init_fields()
 
     def _init_fields(self):
@@ -131,8 +141,11 @@ class EngineV2:
         s, s_ph_arr, n, ev, input_level = prepare_input(s_amp, s_ph, self.K, bk)
 
         V_before = self.f.V.copy()
+        _debug = _log.isEnabledFor(logging.DEBUG)
 
         # 1. Wound + resonance cascade
+        if _debug:
+            v_pre = float(self.f.V.mean())
         self.f.V = apply_wound(self.f.V, s, bk, cfg.wound)
         self.f.V = bk.clamp(self.f.V, 0, 1)
 
@@ -140,6 +153,8 @@ class EngineV2:
 
         self.f.V = apply_phantom(self.f.V, bk, cfg.wound, cfg.backend)
         self.f.V = bk.clamp(self.f.V, 0, 1)
+        if _debug:
+            _log.debug("wound: V_mean=%.4f→%.4f idle=%.1f", v_pre, float(self.f.V.mean()), idle)
 
         # 2. Wave injection
         self.f.psi = apply_injection(
@@ -183,13 +198,32 @@ class EngineV2:
             self.num_actions, cfg.readout,
         )
         self.f.t += 1
+        action = int(np.argmax(scores))
 
-        # Optional periodic validation for debugging
+        _log.info("step %d: action=%d", self.f.t, action)
+
+        if _debug:
+            _log.debug(
+                "step %d: V=%.4f psi=%.2e knots=%.1f crystal=%.2f stress=%.2f R=%.2f",
+                self.f.t, float(self.f.V.mean()), float(np.abs(self.f.psi).mean()),
+                float(self.f.knots.sum()), float(self.f.crystal.sum()),
+                float(self.f.stress.mean()), float(self.f.R.mean()),
+            )
+
+        # Numerical health warning
+        if np.any(np.isnan(self.f.V)) or np.any(np.isnan(self.f.psi)):
+            _log.warning("step %d: NaN detected in fields", self.f.t)
+
+        # Optional periodic validation
         interval = cfg.debug_validate_interval
         if interval > 0 and self.f.t % interval == 0:
             self.f.validate()
 
-        return int(np.argmax(scores))
+        # Diagnostics callback
+        if self._diagnostics_callback is not None:
+            self._diagnostics_callback(self.get_diagnostics())
+
+        return action
 
     def _crystallize_and_erode(self, idle: float, cfg: EngineConfig):
         """Crystallization + erosion — overridden by V3 to add phase dynamics."""
